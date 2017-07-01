@@ -1,7 +1,8 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE BangPatterns #-}
 module Data.FilePlow
-    ( PlowHandle(..), PlowPosHandle(..), Handle, SeekMode(..)
+    ( PlowHandle(..), Handle, SeekMode(..)
+    , seekUntil, seekUntilRev
     , MultiHandle, withMultiHandle
     )
 where
@@ -14,16 +15,9 @@ import System.IO
 import qualified Data.ByteString as BS
 import qualified Data.Vector as V
 
-class PlowPosHandle hdl where
-    type PlowHandlePos hdl :: *
-    pTell :: hdl -> IO (PlowHandlePos hdl)
-
-instance PlowPosHandle Handle where
-    type PlowHandlePos Handle = Integer
-    pTell = hTell
-
 class PlowHandle hdl where
     pSeek :: hdl -> SeekMode -> Integer -> IO ()
+    pTell :: hdl -> IO Integer
     pGetChar :: hdl -> IO Char
     pGetLine :: hdl -> IO BS.ByteString
     pIsEOF :: hdl -> IO Bool
@@ -31,6 +25,7 @@ class PlowHandle hdl where
 
 instance PlowHandle Handle where
     pSeek = hSeek
+    pTell = hTell
     pGetChar = hGetChar
     pGetLine = BS.hGetLine
     pIsEOF = hIsEOF
@@ -42,7 +37,32 @@ data MultiHandle h
     , mh_currentIndex :: !(IORef Int)
     }
 
-instance (PlowHandle h, PlowPosHandle h, PlowHandlePos h ~ Integer) => PlowHandle (MultiHandle h) where
+-- | Seek until a certain charater is reached in reverse
+seekUntilRev :: PlowHandle hdl => hdl -> (Char -> Bool) -> IO Bool
+seekUntilRev hdl pp =
+    do let getLoop =
+               do p <- pTell hdl
+                  if p == 0
+                      then pure False
+                      else do x <- pGetChar hdl
+                              if pp x
+                                  then pure True
+                                  else do pSeek hdl RelativeSeek (-2)
+                                          getLoop
+       getLoop
+
+-- | Seek until a certain charater is reached
+seekUntil :: PlowHandle hdl => hdl -> (Char -> Bool) -> IO Bool
+seekUntil hdl pp =
+    do let getLoop =
+               do eof <- pIsEOF hdl
+                  if eof
+                      then pure False
+                      else do x <- pGetChar hdl
+                              if pp x then pure True else getLoop
+       getLoop
+
+instance (PlowHandle h) => PlowHandle (MultiHandle h) where
     pFileSize mh =
         V.foldM' (\total hdl -> (+ total) <$> pFileSize hdl) 0 (mh_handles mh)
     {-# INLINE pFileSize #-}
@@ -56,12 +76,12 @@ instance (PlowHandle h, PlowPosHandle h, PlowHandlePos h ~ Integer) => PlowHandl
     {-# INLINE pIsEOF #-}
 
     pGetChar mh =
-        do h <- getCurrentHandle mh
+        do h <- getCurrentHandle "pGetChar" mh
            pGetChar h
     {-# INLINE pGetChar #-}
 
     pGetLine mh =
-        do h <- getCurrentHandle mh
+        do h <- getCurrentHandle "pGetLine" mh
            pGetLine h
     {-# INLINE pGetLine #-}
 
@@ -71,6 +91,15 @@ instance (PlowHandle h, PlowPosHandle h, PlowHandlePos h ~ Integer) => PlowHandl
           RelativeSeek -> relativeSeek mh val
           SeekFromEnd -> seekFromEnd mh val
     {-# INLINE pSeek #-}
+
+    pTell mh =
+        do idx <- readIORef (mh_currentIndex mh)
+           let h = mh_handles mh V.! idx
+           localPos <- pTell h
+           foldM
+               (\total i -> (+ total) <$> pFileSize (mh_handles mh V.! i))
+               localPos [0 .. (idx - 1)]
+    {-# INLINE pTell #-}
 
 seekFromEnd :: (PlowHandle h) => MultiHandle h -> Integer -> IO ()
 seekFromEnd mh tval =
@@ -87,7 +116,7 @@ seekFromEnd mh tval =
                              pSeek h SeekFromEnd tgtVal
     in seekLoop tval (ct - 1)
 
-relativeSeek :: (PlowHandle h, PlowPosHandle h, PlowHandlePos h ~ Integer) => MultiHandle h -> Integer -> IO ()
+relativeSeek :: (PlowHandle h) => MultiHandle h -> Integer -> IO ()
 relativeSeek mh tval =
     do myIdx <- readIORef (mh_currentIndex mh)
        let localH = mh_handles mh V.! myIdx
@@ -105,7 +134,13 @@ seekHelp mh t i =
     let ct = V.length (mh_handles mh)
         seekLoop !tgtVal !idx
             | idx >= ct =
-              ioException (IOError Nothing EOF "seekHelp" "No more file handles" Nothing Nothing)
+              let msg = "No more file handles, desired pos: " ++ show t
+              in ioException (IOError Nothing EOF "seekHelp" msg Nothing Nothing)
+            | tgtVal < 0 && idx > 0 =
+              do let h = mh_handles mh V.! (idx - 1)
+                 size <- pFileSize h
+                 pSeek h AbsoluteSeek 0
+                 seekLoop (tgtVal + size) (idx - 1)
             | otherwise =
               do let h = mh_handles mh V.! idx
                  size <- pFileSize h
@@ -115,13 +150,13 @@ seekHelp mh t i =
                              pSeek h AbsoluteSeek tgtVal
     in seekLoop t i
 
-getCurrentHandle :: PlowHandle h => MultiHandle h -> IO h
-getCurrentHandle mh =
+getCurrentHandle :: PlowHandle h => String -> MultiHandle h -> IO h
+getCurrentHandle helpTxt mh =
     do startIdx <- readIORef (mh_currentIndex mh)
        let ct = V.length (mh_handles mh)
            gotoUsefulHdl !i !nh
                | i >= ct =
-                     ioException (IOError Nothing EOF "currentHandle" "No more file handles" Nothing Nothing)
+                     ioException (IOError Nothing EOF ("currentHandle/" ++ helpTxt) "No more file handles" Nothing Nothing)
                | otherwise =
                      do let h = mh_handles mh V.! i
                         when nh $
