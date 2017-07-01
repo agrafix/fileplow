@@ -3,7 +3,7 @@ jobs:
   build:
     working_directory: ~/fileplow
     docker:
-      - image: fpco/stack-build:lts-8.21
+      - image: fpco/stack-build:lts-8.20
     steps:
       - checkout
       - restore_cache:
