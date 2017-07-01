@@ -1,7 +1,9 @@
 module Main where
 
 import Data.FilePlow
+import Data.FilePlow.Ordered
 
+import Control.Monad
 import Data.Monoid
 import System.IO (hClose)
 import System.IO.Temp
@@ -10,6 +12,13 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as BSB
 import qualified Data.ByteString.Char8 as BSC
 import qualified Data.ByteString.Lazy as BSL
+
+withDummyFileNum :: (Int, Int) -> (FilePath -> IO a) -> IO a
+withDummyFileNum (lb, ub) go =
+    withSystemTempFile "dummyFilePlowTest" $ \fp hdl ->
+    do forM_ [lb .. ub] $ \i -> BSC.hPutStrLn hdl (BSC.pack $ show i)
+       hClose hdl
+       go fp
 
 withDummyFile :: Char -> Int -> (FilePath -> IO a) -> IO a
 withDummyFile c size go =
@@ -75,3 +84,5 @@ main =
                      pSeek hdl RelativeSeek 25
                      bs6 <- readRest hdl
                      bs6 `shouldBe` (BSC.replicate 25 'a' <> BSC.replicate 100 'b')
+       describe "ordered" $
+           undefined
