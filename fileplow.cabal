@@ -1,7 +1,7 @@
 name:                fileplow
 version:             0.1.0.0
--- synopsis:
--- description:
+synopsis:            Library to process and search large files or a collection of files
+description:         Library to process and search large files or a collection of files
 homepage:            https://github.com/agrafix/fileplow#readme
 license:             BSD3
 license-file:        LICENSE
