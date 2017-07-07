@@ -1,13 +1,17 @@
+{-# LANGUAGE OverloadedStrings #-}
 module Main where
 
 import Data.FilePlow
 import Data.FilePlow.Ordered
+import qualified Data.Conduit.List as CL
 
 import Control.Monad
 import Control.Monad.Trans
+import Control.Monad.Trans.Resource
+import Data.Conduit
 import Data.List
 import Data.Monoid
-import System.IO (hClose)
+import System.IO (hClose, openFile)
 import System.IO.Temp
 import Test.Hspec
 import Test.QuickCheck
@@ -45,6 +49,21 @@ readRest hdl =
                       else do x <- pGetChar hdl
                               getLoop (builder <> BSB.char8 x)
        getLoop mempty
+
+streamLinesFromHandle :: MonadResource m => [FilePath] -> Source m BS.ByteString
+streamLinesFromHandle fps =
+    withMultiHandle' alloc fps $ \hdl ->
+    loop hdl
+    where
+      loop hdl =
+          do eof <- liftIO (pIsEOF hdl)
+             if eof
+                 then pure ()
+                 else do line <- liftIO (pGetLine hdl)
+                         yield line
+                         loop hdl
+      alloc name mode =
+          bracketP (openFile name mode) hClose
 
 main :: IO ()
 main =
@@ -122,6 +141,16 @@ main =
                      pSeek hdl RelativeSeek 25
                      bs6 <- readRest hdl
                      bs6 `shouldBe` (BSC.replicate 25 'a' <> BSC.replicate 100 'b')
+       describe "conduit" $
+           do it "line by line streaming" $
+                  withDummyFileNum id (100, 199) $ \f1 ->
+                  withDummyFileNum id (200, 299) $ \f2 ->
+                  do out <-
+                         runResourceT $
+                         streamLinesFromHandle [f1, f2]
+                         =$= CL.map (\ln -> ln <> "\n")
+                         $$ CL.fold (\xs x -> xs <> x) mempty
+                     out `shouldBe` (makeRangeBS id 100 299)
        describe "ordered" $
            do it "find a lower bound" $
                   withDummyFileNum id (100, 199) $ \f1 ->
