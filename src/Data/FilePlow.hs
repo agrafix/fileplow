@@ -3,11 +3,12 @@
 module Data.FilePlow
     ( PlowHandle(..), Handle, SeekMode(..)
     , seekUntil, seekUntilRev
-    , MultiHandle, withMultiHandle
+    , MultiHandle, withMultiHandle, withMultiHandle'
     )
 where
 
 import Control.Monad
+import Control.Monad.Trans
 import Data.IORef
 import GHC.IO.Exception
 import GHC.IO.Handle
@@ -15,12 +16,25 @@ import System.IO
 import qualified Data.ByteString as BS
 import qualified Data.Vector as V
 
+-- | An abstract handle. The class functions should (try to) follow the
+-- semantics of the original concrete functions as close as possible
 class PlowHandle hdl where
+    -- | generalized version of 'hSeek'
     pSeek :: hdl -> SeekMode -> Integer -> IO ()
+
+    -- | generalized version of 'hTell'
     pTell :: hdl -> IO Integer
+
+    -- | generalized version of 'hGetChar'
     pGetChar :: hdl -> IO Char
+
+    -- | generalized version of 'BS.hGetLine'
     pGetLine :: hdl -> IO BS.ByteString
+
+    -- | generalized version of 'hIsEOF'
     pIsEOF :: hdl -> IO Bool
+
+    -- | generalized version of 'hFileSize'
     pFileSize :: hdl -> IO Integer
 
 instance PlowHandle Handle where
@@ -31,6 +45,7 @@ instance PlowHandle Handle where
     pIsEOF = hIsEOF
     pFileSize = hFileSize
 
+-- | A virtual handle combining multiple handles into one
 data MultiHandle h
     = MultiHandle
     { mh_handles :: !(V.Vector h)
@@ -156,7 +171,9 @@ getCurrentHandle helpTxt mh =
        let ct = V.length (mh_handles mh)
            gotoUsefulHdl !i !nh
                | i >= ct =
-                     ioException (IOError Nothing EOF ("currentHandle/" ++ helpTxt) "No more file handles" Nothing Nothing)
+                     ioException $
+                     IOError Nothing EOF ("currentHandle/" ++ helpTxt)
+                         "No more file handles" Nothing Nothing
                | otherwise =
                      do let h = mh_handles mh V.! i
                         when nh $
@@ -168,16 +185,27 @@ getCurrentHandle helpTxt mh =
                                     pure h
        gotoUsefulHdl startIdx False
 
-
+-- | Create a `MultiHandle` to many files. The `MultiHandle` will behave as if
+-- the files were simple concatinated in order
 withMultiHandle :: [FilePath] -> (MultiHandle Handle -> IO a) -> IO a
-withMultiHandle files go =
+withMultiHandle = withMultiHandle' withFile
+
+-- | A more general version of `multiHandle` allowing to provide a custom
+-- function to create a `Handle` from a file in any monad that is `MonadIO`.
+withMultiHandle' ::
+    MonadIO m
+    => (FilePath -> IOMode -> (Handle -> m a) -> m a)
+    -> [FilePath]
+    -> (MultiHandle Handle -> m a)
+    -> m a
+withMultiHandle' withHandle files go =
     loop [] files
     where
       loop accum xs =
           case xs of
             [] ->
-                do r <- newIORef 0
+                do r <- liftIO (newIORef 0)
                    go (MultiHandle (V.fromList (reverse accum)) r)
             (fp : more) ->
-                withFile fp ReadMode $ \hdl ->
+                withHandle fp ReadMode $ \hdl ->
                 loop (hdl : accum) more
