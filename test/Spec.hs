@@ -112,6 +112,13 @@ main =
                      ok `shouldBe` True
                      bs <- readRest hdl
                      bs `shouldBe` BSC.replicate 100 'b'
+              it "seek untilRev starting at EOF" $
+                  withDummyFile 'a' 100 $ \f1 ->
+                  withDummyFile 'b' 100 $ \f2 ->
+                  withMultiHandle [f1, f2] $ \hdl ->
+                  do pSeek hdl SeekFromEnd 0
+                     pIsEOF hdl `shouldReturn` True
+                     seekUntilRev hdl (== 'a') `shouldReturn` True
               it "seeked reads work" $
                   withDummyFile 'a' 100 $ \f1 ->
                   withDummyFile 'b' 100 $ \f2 ->

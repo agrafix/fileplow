@@ -52,19 +52,23 @@ data MultiHandle h
     , mh_currentIndex :: !(IORef Int)
     }
 
+branchM :: Monad m => m Bool -> m a -> m a -> m a
+branchM cond t f =
+    do x <- cond
+       if x
+          then t
+          else f
+
 -- | Seek until a certain charater is reached in reverse
 seekUntilRev :: PlowHandle hdl => hdl -> (Char -> Bool) -> IO Bool
 seekUntilRev hdl pp =
-    do let getLoop =
-               do p <- pTell hdl
-                  if p == 0
-                      then pure False
-                      else do x <- pGetChar hdl
-                              if pp x
-                                  then pure True
-                                  else do pSeek hdl RelativeSeek (-2)
-                                          getLoop
-       getLoop
+    do let loop =
+               branchM ((==) 0 <$> pTell hdl) (pure False) $
+               branchM (pIsEOF hdl) (pSeek hdl SeekFromEnd (-1) >> loop) $
+               branchM (pp <$> pGetChar hdl) (pure True) $
+               do pSeek hdl RelativeSeek (-2)
+                  loop
+       loop
 
 -- | Seek until a certain charater is reached
 seekUntil :: PlowHandle hdl => hdl -> (Char -> Bool) -> IO Bool
